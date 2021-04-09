@@ -71,10 +71,6 @@
 
 // #include "../SPIRV-Cross/spirv_common.hpp"
 
-extern "C" {
-	SH_IMPORT_EXPORT void ShOutputHtml();
-}
-
 // Command-line options
 enum TOptions {
 	EOptionNone = 0,
