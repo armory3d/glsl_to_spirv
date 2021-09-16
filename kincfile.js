@@ -22,7 +22,13 @@ project.addIncludeDir('glslang/glslang/MachineIndependent');
 project.addIncludeDir('glslang/glslang/Include');
 project.addIncludeDir('glslang/OGLCompilersDLL');
 
-project.addFile('glslang/glslang/OSDependent/Unix/**');
-project.addIncludeDir('glslang/glslang/OSDependent/Unix');
+if (platform === Platform.Windows) {
+	project.addFile('glslang/glslang/OSDependent/Windows/**');
+	project.addIncludeDir('glslang/glslang/OSDependent/Windows');
+}
+else {
+	project.addFile('glslang/glslang/OSDependent/Unix/**');
+	project.addIncludeDir('glslang/glslang/OSDependent/Unix');
+}
 
 resolve(project);
