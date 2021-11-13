@@ -146,6 +146,7 @@ namespace {
 
 	unsigned booltype = 0;
 	unsigned inttype = 0;
+	unsigned uinttype = 0;
 	unsigned floattype = 0;
 	unsigned vec4type = 0;
 	unsigned vec3type = 0;
@@ -158,7 +159,7 @@ namespace {
 	unsigned vec3arraytype = 0;
 	unsigned vec4arraytype = 0;
 
-	void outputDecorations(unsigned* instructionsData, unsigned& instructionsDataIndex, std::vector<unsigned>& structtypeindices, std::vector<Instruction>& newinstructions, std::vector<Var>& uniforms,
+	void outputDecorations(unsigned* instructionsData, unsigned& instructionsDataIndex, std::vector<unsigned>& structtypeindices, std::vector<unsigned>& structidindices, std::vector<Instruction>& newinstructions, std::vector<Var>& uniforms,
 		std::map<unsigned, unsigned>& pointers, std::vector<Var>& invars, std::vector<Var>& outvars, std::vector<Var>& images, std::map<unsigned, unsigned> arraySizes, ShaderStage stage) {
 
 		unsigned location = 0;
@@ -218,42 +219,54 @@ namespace {
 			}
 			else if (utype == floatarraytype || utype == vec2arraytype || utype == vec3arraytype || utype == vec4arraytype) {
 				Instruction dec3(OpDecorate, &instructionsData[instructionsDataIndex], 3);
-				structtypeindices.push_back(instructionsDataIndex);
 				instructionsData[instructionsDataIndex++] = utype;
 				instructionsData[instructionsDataIndex++] = DecorationArrayStride;
 				instructionsData[instructionsDataIndex++] = 16;
 				newinstructions.push_back(dec3);
 			}
-			if (utype == booltype || utype == inttype || utype == floattype) offset += 4;
+			if (utype == booltype || utype == inttype || utype == floattype || utype == uinttype) {
+				offset += 4;
+			}
 			else if (utype == vec2type) offset += 8;
 			else if (utype == vec3type) offset += 12;
 			else if (utype == vec4type) offset += 16;
 			else if (utype == mat2type) offset += 16;
-			else if (utype == mat3type) offset += 48; // 36 + 12 padding for DecorationMatrixStride of 16
+			else if (utype == mat3type) {
+				offset += 48; // 36 + 12 padding for DecorationMatrixStride of 16
+			}
 			else if (utype == mat4type) offset += 64;
 			else if (utype == floatarraytype) offset += arraySizes[floatarraytype] * 4;
 			else if (utype == vec2arraytype) offset += arraySizes[vec2arraytype] * 4 * 2;
 			else if (utype == vec3arraytype) offset += arraySizes[vec3arraytype] * 4 * 3;
 			else if (utype == vec4arraytype) offset += arraySizes[vec4arraytype] * 4 * 4;
-			else offset += 1; // Type not handled
+			else {
+				offset += 1; // Type not handled
+			}
 		}
 		if (uniforms.size() > 0) {
+			Instruction decbind(OpDecorate, &instructionsData[instructionsDataIndex], 3);
+			structidindices.push_back(instructionsDataIndex);
+			instructionsData[instructionsDataIndex++] = 0;
+			instructionsData[instructionsDataIndex++] = DecorationBinding;
+			instructionsData[instructionsDataIndex++] = stage == StageVertex ? 0 : 1;
+			newinstructions.push_back(decbind);
+
+			Instruction decdescset(OpDecorate, &instructionsData[instructionsDataIndex], 3);
+			structidindices.push_back(instructionsDataIndex);
+			instructionsData[instructionsDataIndex++] = 0;
+			instructionsData[instructionsDataIndex++] = DecorationDescriptorSet;
+			instructionsData[instructionsDataIndex++] = 0;
+			newinstructions.push_back(decdescset);
+
 			Instruction dec1(OpDecorate, &instructionsData[instructionsDataIndex], 2);
 			structtypeindices.push_back(instructionsDataIndex);
 			instructionsData[instructionsDataIndex++] = 0;
 			instructionsData[instructionsDataIndex++] = DecorationBlock;
 			newinstructions.push_back(dec1);
-
-			Instruction decbind(OpDecorate, &instructionsData[instructionsDataIndex], 3);
-			structtypeindices.push_back(instructionsDataIndex);
-			instructionsData[instructionsDataIndex++] = 0;
-			instructionsData[instructionsDataIndex++] = DecorationBinding;
-			instructionsData[instructionsDataIndex++] = stage == StageVertex ? 0 : 1;
-			newinstructions.push_back(decbind);
 		}
 	}
 
-	void outputTypes(unsigned* instructionsData, unsigned& instructionsDataIndex, std::vector<unsigned>& structtypeindices, unsigned& structvarindex, std::vector<Instruction>& newinstructions, std::vector<Var>& uniforms,
+	void outputTypes(unsigned* instructionsData, unsigned& instructionsDataIndex, std::vector<unsigned>& structtypeindices, std::vector<unsigned>& structidindices, unsigned& structvarindex, std::vector<Instruction>& newinstructions, std::vector<Var>& uniforms,
 		std::map<unsigned, unsigned>& pointers, std::map<unsigned, unsigned>& constants, unsigned& currentId, unsigned& structid, unsigned& floatpointertype,
 		unsigned& dotfive, unsigned& two, unsigned& three, unsigned& tempposition, ShaderStage stage) {
 		if (uniforms.size() > 0) {
@@ -272,20 +285,21 @@ namespace {
 			Instruction variable(OpVariable, &instructionsData[instructionsDataIndex], 3);
 			instructionsData[instructionsDataIndex++] = pointertype;
 			structid = instructionsData[instructionsDataIndex++] = currentId++;
+			for (auto index : structidindices) instructionsData[index] = structid;
 			instructionsData[structvarindex] = structid;
 			instructionsData[instructionsDataIndex++] = StorageClassUniform;
 			newinstructions.push_back(variable);
 
-			if (inttype == 0) {
+			if (uinttype == 0) {
 				Instruction typeint(OpTypeInt, &instructionsData[instructionsDataIndex], 3);
-				inttype = instructionsData[instructionsDataIndex++] = currentId++;
+				uinttype = instructionsData[instructionsDataIndex++] = currentId++;
 				instructionsData[instructionsDataIndex++] = 32;
 				instructionsData[instructionsDataIndex++] = 0;
 				newinstructions.push_back(typeint);
 			}
 			for (unsigned i = 0; i < uniforms.size(); ++i) {
 				Instruction constant(OpConstant, &instructionsData[instructionsDataIndex], 3);
-				instructionsData[instructionsDataIndex++] = inttype;
+				instructionsData[instructionsDataIndex++] = uinttype;
 				unsigned constantid = currentId++;
 				instructionsData[instructionsDataIndex++] = constantid;
 				constants[i] = constantid;
@@ -319,22 +333,22 @@ namespace {
 			*(float*)&instructionsData[instructionsDataIndex++] = 0.5f;
 			newinstructions.push_back(dotfiveconstant);
 
-			if (inttype == 0) {
+			if (uinttype == 0) {
 				Instruction inty(OpTypeInt, &instructionsData[instructionsDataIndex], 3);
-				inttype = instructionsData[instructionsDataIndex++] = currentId++;
+				uinttype = instructionsData[instructionsDataIndex++] = currentId++;
 				instructionsData[instructionsDataIndex++] = 32;
 				instructionsData[instructionsDataIndex++] = 0;
 				newinstructions.push_back(inty);
 			}
 
 			Instruction twoconstant(OpConstant, &instructionsData[instructionsDataIndex], 3);
-			instructionsData[instructionsDataIndex++] = inttype;
+			instructionsData[instructionsDataIndex++] = uinttype;
 			two = instructionsData[instructionsDataIndex++] = currentId++;
 			instructionsData[instructionsDataIndex++] = 2;
 			newinstructions.push_back(twoconstant);
 
 			Instruction threeconstant(OpConstant, &instructionsData[instructionsDataIndex], 3);
-			instructionsData[instructionsDataIndex++] = inttype;
+			instructionsData[instructionsDataIndex++] = uinttype;
 			three = instructionsData[instructionsDataIndex++] = currentId++;
 			instructionsData[instructionsDataIndex++] = 3;
 			newinstructions.push_back(threeconstant);
@@ -378,6 +392,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 	std::map<unsigned, unsigned> arraySizeConstants;
 	std::map<unsigned, unsigned> arraySizes;
 	unsigned position;
+	unsigned vertexId = -1;
 
 	for (unsigned i = 0; i < instructions.size(); ++i) {
 		Instruction& inst = instructions[i];
@@ -394,6 +409,9 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			Decoration decoration = (Decoration)inst.operands[1];
 			if (decoration == DecorationBuiltIn) {
 				names[id] = "";
+			}
+			if (decoration == DecorationBuiltIn && inst.operands[2] == BuiltInVertexId) {
+				vertexId = inst.operands[0];
 			}
 			break;
 		}
@@ -434,8 +452,11 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			unsigned id = inst.operands[0];
 			unsigned width = inst.operands[1];
 			unsigned signedness = inst.operands[2];
-			if (width == 32 && signedness == 0) {
+			if (width == 32 && signedness == 1) {
 				inttype = id;
+			}
+			else if (width == 32 && signedness == 0) {
+				uinttype = id;
 			}
 			break;
 		}
@@ -533,7 +554,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			int accessId = accessChains[to];
 			for (unsigned j = 0; j < tempvars.size(); ++j) {
 				if (tempvars[j].id == accessId) {
-					for (const auto &pair : pointers) {
+					for (const auto& pair : pointers) {
 						if (tempvars[j].type == pair.first) {
 							if (strcmp(names[pair.second].c_str(), "gl_PerVertex") == 0) {
 								position = to;
@@ -558,7 +579,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 	unsigned instructionsDataIndex = 0;
 	unsigned currentId = bound;
 	unsigned structid;
-	std::vector<unsigned> structtypeindices;
+	std::vector<unsigned> structtypeindices, structidindices;
 	unsigned structvarindex;
 	unsigned tempposition;
 	unsigned floatpointertype;
@@ -590,7 +611,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 					namesInserted = true;
 				}
 				if (!decorationsInserted) {
-					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
+					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, structidindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
 					decorationsInserted = true;
 				}
 			}
@@ -602,7 +623,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 					namesInserted = true;
 				}
 				if (!decorationsInserted) {
-					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
+					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, structidindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
 					decorationsInserted = true;
 				}
 			}
@@ -616,14 +637,14 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 					namesInserted = true;
 				}
 				if (!decorationsInserted) {
-					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
+					outputDecorations(instructionsData, instructionsDataIndex, structtypeindices, structidindices, newinstructions, uniforms, pointers, invars, outvars, images, arraySizes, stage);
 					decorationsInserted = true;
 				}
 			}
 			break;
 		case SpirVTypes:
 			if (inst.opcode == OpFunction) {
-				outputTypes(instructionsData, instructionsDataIndex, structtypeindices, structvarindex, newinstructions, uniforms, pointers, constants, currentId,
+				outputTypes(instructionsData, instructionsDataIndex, structtypeindices, structidindices, structvarindex, newinstructions, uniforms, pointers, constants, currentId,
 					structid, floatpointertype, dotfive, two, three, tempposition, stage);
 				state = SpirVFunctions;
 			}
@@ -656,21 +677,140 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 				newinstructions.push_back(newinst);
 			}
 			else {
+				// filter out the vertexId-input
+				Instruction newinst(OpEntryPoint, &instructionsData[instructionsDataIndex], 0);
+				unsigned length = inst.length;
+				for (unsigned i = 3; i < inst.length; ++i) {
+					if (inst.operands[i] == vertexId) {
+						length -= 1;
+					}
+				}
+				for (unsigned i = 0; i < 3; ++i) {
+					instructionsData[instructionsDataIndex++] = inst.operands[i];
+				}
+				for (unsigned i = 3; i < inst.length; ++i) {
+					if (inst.operands[i] != vertexId) {
+						instructionsData[instructionsDataIndex++] = inst.operands[i];
+					}
+				}
+				newinst.length = length;
+				newinstructions.push_back(newinst);
+			}
+		}
+		else if (inst.opcode == OpName) {
+			bool isInput = false;
+			for (auto var : invars) {
+				if (inst.operands[0] == var.id) {
+					isInput = true;
+				}
+			}
+
+			bool isUniform = false;
+			for (auto uniform : uniforms) {
+				if (inst.operands[0] == uniform.id) {
+					isInput = true;
+				}
+			}
+
+			bool isImage = false;
+			for (auto image : images) {
+				if (inst.operands[0] == image.id) {
+					isInput = true;
+				}
+			}
+
+			if (isInput || isUniform || isImage) {
 				newinstructions.push_back(inst);
 			}
+		}
+		else if (inst.opcode == OpMemberName) {
+
+		}
+		else if (inst.opcode == OpSource) {
+
+		}
+		else if (inst.opcode == OpSourceContinued) {
+
+		}
+		else if (inst.opcode == OpSourceExtension) {
+
+		}
+		else if (inst.opcode == OpExecutionMode) {
+			unsigned executionMode = inst.operands[1];
+			if (executionMode == 8) {
+				Instruction copy = inst;
+				copy.operands[1] = 7;
+				newinstructions.push_back(copy);
+			}
+			else {
+				newinstructions.push_back(inst);
+			}
+		}
+		else if (inst.opcode == OpTypeImage) {
+			Instruction copy = inst;
+			if (stage == StageCompute) {
+				copy.length -= 1;
+			}
+			else {
+				copy.length -= 2;
+			}
+			newinstructions.push_back(copy);
 		}
 		else if (inst.opcode == OpVariable) {
 			unsigned type = inst.operands[0];
 			unsigned id = inst.operands[1];
 			StorageClass storage = (StorageClass)inst.operands[2];
-			if (storage != StorageClassUniformConstant || imageTypes[type]) {
+			if (id == vertexId) {
+				// not allowed in Vulkan
+			}
+			else if (storage != StorageClassUniformConstant || imageTypes[type]) {
+				newinstructions.push_back(inst);
+			}
+		}
+		else if (inst.opcode == OpAccessChain) {
+			// replace all accesses to global uniforms
+			unsigned resultType = inst.operands[0];
+			unsigned resultId = inst.operands[1];
+			unsigned base = inst.operands[2];
+
+			Var uniform;
+			unsigned index;
+			bool found = false;
+			for (unsigned i = 0; i < uniforms.size(); ++i) {
+				if (uniforms[i].id == base) {
+					uniform = uniforms[i];
+					index = i;
+					found = true;
+					break;
+				}
+			}
+
+			if (found) {
+				Instruction access1(OpAccessChain, &instructionsData[instructionsDataIndex], 4);
+				instructionsData[instructionsDataIndex++] = uniform.pointertype;
+				unsigned newbase = instructionsData[instructionsDataIndex++] = currentId++;
+				instructionsData[instructionsDataIndex++] = structid;
+				instructionsData[instructionsDataIndex++] = constants[index];
+				newinstructions.push_back(access1);
+				Instruction access2(OpAccessChain, &instructionsData[instructionsDataIndex], inst.length);
+				instructionsData[instructionsDataIndex++] = resultType;
+				instructionsData[instructionsDataIndex++] = resultId;
+				instructionsData[instructionsDataIndex++] = newbase;
+				for (unsigned i = 3; i < inst.length; ++i) {
+					instructionsData[instructionsDataIndex++] = inst.operands[i];
+				}
+				newinstructions.push_back(access2);
+			}
+			else {
 				newinstructions.push_back(inst);
 			}
 		}
 		else if (inst.opcode == OpLoad) {
+			// replace all loads from global uniforms
 			unsigned type = inst.operands[0];
 			unsigned id = inst.operands[1];
 			unsigned pointer = inst.operands[2];
+
 			Var uniform;
 			unsigned index;
 			bool found = false;
@@ -682,17 +822,18 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 					break;
 				}
 			}
+
 			if (found) {
 				Instruction access(OpAccessChain, &instructionsData[instructionsDataIndex], 4);
 				instructionsData[instructionsDataIndex++] = uniform.pointertype;
-				unsigned pointer = instructionsData[instructionsDataIndex++] = currentId++;
+				unsigned newpointer = instructionsData[instructionsDataIndex++] = currentId++;
 				instructionsData[instructionsDataIndex++] = structid;
 				instructionsData[instructionsDataIndex++] = constants[index];
 				newinstructions.push_back(access);
 				Instruction load(OpLoad, &instructionsData[instructionsDataIndex], 3);
 				instructionsData[instructionsDataIndex++] = type;
 				instructionsData[instructionsDataIndex++] = id;
-				instructionsData[instructionsDataIndex++] = pointer;
+				instructionsData[instructionsDataIndex++] = newpointer;
 				newinstructions.push_back(load);
 			}
 			else {
@@ -794,7 +935,10 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		}
 		else if (inst.opcode == OpDecorate) {
 			Decoration decoration = (Decoration)inst.operands[1];
-			if (decoration != DecorationBinding) {
+			if (decoration == DecorationBuiltIn && inst.operands[2] == BuiltInVertexId) {
+				// not allowed in Vulkan
+			}
+			else if (decoration != DecorationBinding) {
 				newinstructions.push_back(inst);
 			}
 		}
@@ -805,4 +949,5 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 
 	bound = currentId + 1;
 	outputLength = writeInstructions(filename, output, newinstructions);
+	//outputLength = writeInstructions(filename, output, instructions);
 }
