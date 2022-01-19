@@ -270,7 +270,7 @@ namespace {
 		std::map<unsigned, unsigned>& pointers, std::map<unsigned, unsigned>& constants, unsigned& currentId, unsigned& structid, unsigned& floatpointertype,
 		unsigned& dotfive, unsigned& two, unsigned& three, unsigned& tempposition, ShaderStage stage) {
 		if (uniforms.size() > 0) {
-			Instruction typestruct(OpTypeStruct, &instructionsData[instructionsDataIndex], 1 + uniforms.size());
+			Instruction typestruct(OpTypeStruct, &instructionsData[instructionsDataIndex], 1 + (unsigned)uniforms.size());
 			unsigned structtype = instructionsData[instructionsDataIndex++] = currentId++;
 			for (unsigned i = 0; i < uniforms.size(); ++i) {
 				instructionsData[instructionsDataIndex++] = pointers[uniforms[i].type];
@@ -392,7 +392,6 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 	std::map<unsigned, unsigned> arraySizeConstants;
 	std::map<unsigned, unsigned> arraySizes;
 	unsigned position;
-	unsigned vertexId = -1;
 
 	for (unsigned i = 0; i < instructions.size(); ++i) {
 		Instruction& inst = instructions[i];
@@ -409,9 +408,6 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			Decoration decoration = (Decoration)inst.operands[1];
 			if (decoration == DecorationBuiltIn) {
 				names[id] = "";
-			}
-			if (decoration == DecorationBuiltIn && inst.operands[2] == BuiltInVertexId) {
-				vertexId = inst.operands[0];
 			}
 			break;
 		}
@@ -677,24 +673,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 				newinstructions.push_back(newinst);
 			}
 			else {
-				// filter out the vertexId-input
-				Instruction newinst(OpEntryPoint, &instructionsData[instructionsDataIndex], 0);
-				unsigned length = inst.length;
-				for (unsigned i = 3; i < inst.length; ++i) {
-					if (inst.operands[i] == vertexId) {
-						length -= 1;
-					}
-				}
-				for (unsigned i = 0; i < 3; ++i) {
-					instructionsData[instructionsDataIndex++] = inst.operands[i];
-				}
-				for (unsigned i = 3; i < inst.length; ++i) {
-					if (inst.operands[i] != vertexId) {
-						instructionsData[instructionsDataIndex++] = inst.operands[i];
-					}
-				}
-				newinst.length = length;
-				newinstructions.push_back(newinst);
+				newinstructions.push_back(inst);
 			}
 		}
 		else if (inst.opcode == OpName) {
@@ -705,21 +684,14 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 				}
 			}
 
-			bool isUniform = false;
-			for (auto uniform : uniforms) {
-				if (inst.operands[0] == uniform.id) {
-					isInput = true;
-				}
-			}
-
 			bool isImage = false;
 			for (auto image : images) {
 				if (inst.operands[0] == image.id) {
-					isInput = true;
+					isImage = true;
 				}
 			}
 
-			if (isInput || isUniform || isImage) {
+			if (isInput || isImage) {
 				newinstructions.push_back(inst);
 			}
 		}
@@ -760,10 +732,7 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			unsigned type = inst.operands[0];
 			unsigned id = inst.operands[1];
 			StorageClass storage = (StorageClass)inst.operands[2];
-			if (id == vertexId) {
-				// not allowed in Vulkan
-			}
-			else if (storage != StorageClassUniformConstant || imageTypes[type]) {
+			if (storage != StorageClassUniformConstant || imageTypes[type]) {
 				newinstructions.push_back(inst);
 			}
 		}
@@ -936,7 +905,10 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		else if (inst.opcode == OpDecorate) {
 			Decoration decoration = (Decoration)inst.operands[1];
 			if (decoration == DecorationBuiltIn && inst.operands[2] == BuiltInVertexId) {
-				// not allowed in Vulkan
+				// VertexId is not allowed in Vulkan
+				Instruction copy = inst;
+				copy.operands[2] = BuiltInVertexIndex;
+				newinstructions.push_back(copy);
 			}
 			else if (decoration != DecorationBinding) {
 				newinstructions.push_back(inst);
