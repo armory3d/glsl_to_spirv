@@ -1169,11 +1169,10 @@ int compileWithTextureUnits(const char* targetlang, const char* from, std::strin
 	return errors;
 }
 
-void krafix_compile(const char* source, char* output, int* length, const char* targetlang, const char* system, const char* shadertype) {
+extern "C" int krafix_compile(const char *source, char *output, int *length, const char *targetlang, const char *system, const char *shadertype, int version) {
 	std::string defines;
 	std::vector<int> textureUnitCounts;
 	bool instancedoptional = false;
-	int version = -1;
 	bool getversion = false;
 	bool relax = false;
 
@@ -1215,6 +1214,7 @@ void krafix_compile(const char* source, char* output, int* length, const char* t
 
 	int errors = 0;
 	errors = compileWithTextureUnits(targetlang, nullptr, "", shadertype, nullptr, source, output, length, system, includer, defines, version, textureUnitCounts, usesTextureUnitsCount, instancedoptional && usesInstancedoptional, relax);
+	return errors;
 }
 
 // d3d11 in/basic.vert.glsl test.d3d11 temp windows
