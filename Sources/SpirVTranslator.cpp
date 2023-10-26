@@ -11,7 +11,7 @@
 #include <sstream>
 #include <strstream>
 
-#include <spirv-tools/optimizer.hpp>
+// #include <spirv-tools/optimizer.hpp>
 
 using namespace krafix;
 
@@ -1086,15 +1086,15 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 	std::vector<uint32_t> spirv;
 	outputLength = writeInstructions(spirv, newinstructions);
 
-	spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_0);
-	optimizer.RegisterPerformancePasses();
+	// spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_0);
+	// optimizer.RegisterPerformancePasses();
 	std::vector<uint32_t> optimizedSpirv;
-	bool success = optimizer.Run(spirv.data(), spirv.size(), &optimizedSpirv);
+	// bool success = optimizer.Run(spirv.data(), spirv.size(), &optimizedSpirv);
 
-	if (!success) {
-		fprintf(stderr, "Optimizer error, falling back to unoptimized SPIRV.\n");
+	// if (!success) {
+		// fprintf(stderr, "Optimizer error, falling back to unoptimized SPIRV.\n");
 		optimizedSpirv = spirv;
-	}
+	// }
 
 	outputLength = (int)(optimizedSpirv.size() * 4);
 	if (output) {
