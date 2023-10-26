@@ -1,12 +1,17 @@
 #include "SpirVTranslator.h"
+
 #include <SPIRV/spirv.hpp>
 #include "../glslang/glslang/Public/ShaderLang.h"
+#include "../SPIRV-Cross/spirv_cross_error_handling.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <map>
 #include <string.h>
 #include <sstream>
 #include <strstream>
+
+#include <spirv-tools/optimizer.hpp>
 
 using namespace krafix;
 
@@ -24,6 +29,10 @@ namespace {
 		out->put((word >> 8) & 0xff);
 		out->put((word >> 16) & 0xff);
 		out->put((word >> 24) & 0xff);
+	}
+
+	void writeInstruction(std::vector<uint32_t>& out, unsigned word) {
+		out.push_back(word);
 	}
 
 	bool isDebugInformation(Instruction& instruction) {
@@ -116,8 +125,44 @@ int SpirVTranslator::writeInstructions(const char* filename, char* output, std::
 	return length;
 }
 
+int SpirVTranslator::writeInstructions(std::vector<uint32_t>& output, std::vector<Instruction>& instructions) {
+	int length = 0;
+	writeInstruction(output, magicNumber);
+	length += 4;
+	writeInstruction(output, version);
+	length += 4;
+	writeInstruction(output, generator);
+	length += 4;
+	writeInstruction(output, bound);
+	length += 4;
+	writeInstruction(output, schema);
+	length += 4;
+
+	for (unsigned i = 0; i < instructions.size(); ++i) {
+		Instruction& inst = instructions[i];
+		writeInstruction(output, ((inst.length + 1) << 16) | (unsigned)inst.opcode);
+		length += 4;
+		for (unsigned i2 = 0; i2 < inst.length; ++i2) {
+			writeInstruction(output, inst.operands[i2]);
+			length += 4;
+		}
+	}
+
+	return length;
+}
+
 namespace {
 	using namespace spv;
+
+	uint32_t alignOffset(uint32_t offset, uint32_t alignment) {
+		uint32_t mask = alignment - 1;
+		if ((offset & mask) == 0) {
+			return offset;
+		}
+		else {
+			return (offset + alignment - 1) & ~mask;
+		}
+	}
 
 	void outputNames(unsigned* instructionsData, unsigned& instructionsDataIndex, std::vector<unsigned>& structtypeindices, unsigned& structvarindex, std::vector<Instruction>& newinstructions, std::vector<Var>& uniforms) {
 		if (uniforms.size() > 0) {
@@ -191,12 +236,19 @@ namespace {
 		}
 		unsigned offset = 0;
 		for (unsigned i = 0; i < uniforms.size(); ++i) {
+			Instruction nonwr(OpMemberDecorate, &instructionsData[instructionsDataIndex], 3);
+			structtypeindices.push_back(instructionsDataIndex);
+			instructionsData[instructionsDataIndex++] = 0;
+			instructionsData[instructionsDataIndex++] = i;
+			instructionsData[instructionsDataIndex++] = DecorationNonWritable;
+			newinstructions.push_back(nonwr);
+
 			Instruction newinst(OpMemberDecorate, &instructionsData[instructionsDataIndex], 4);
 			structtypeindices.push_back(instructionsDataIndex);
 			instructionsData[instructionsDataIndex++] = 0;
 			instructionsData[instructionsDataIndex++] = i;
 			instructionsData[instructionsDataIndex++] = DecorationOffset;
-			instructionsData[instructionsDataIndex++] = offset;
+			unsigned int* offsetPointer = &instructionsData[instructionsDataIndex++];
 			newinstructions.push_back(newinst);
 
 			int utype = pointers[uniforms[i].type];
@@ -221,24 +273,94 @@ namespace {
 				Instruction dec3(OpDecorate, &instructionsData[instructionsDataIndex], 3);
 				instructionsData[instructionsDataIndex++] = utype;
 				instructionsData[instructionsDataIndex++] = DecorationArrayStride;
-				instructionsData[instructionsDataIndex++] = 16;
+				if (utype == floatarraytype) {
+					instructionsData[instructionsDataIndex++] = 1 * 4;
+				}
+				if (utype == vec2arraytype) {
+					instructionsData[instructionsDataIndex++] = 2 * 4;
+				}
+				if (utype == vec3arraytype) {
+					instructionsData[instructionsDataIndex++] = 3 * 4;
+				}
+				if (utype == vec4arraytype) {
+					instructionsData[instructionsDataIndex++] = 4 * 4;
+				}
 				newinstructions.push_back(dec3);
 			}
+
+			if (utype == booltype || utype == inttype || utype == floattype || utype == uinttype) {
+				offset = alignOffset(offset, 4);
+			}
+			else if (utype == vec2type) {
+				offset = alignOffset(offset, 8);
+			}
+			else if (utype == vec3type) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == vec4type) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == mat2type) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == mat3type) {
+				offset = alignOffset(offset, 48);
+			}
+			else if (utype == mat4type) {
+				offset = alignOffset(offset, 64);
+			}
+			else if (utype == floatarraytype) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == vec2arraytype) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == vec3arraytype) {
+				offset = alignOffset(offset, 16);
+			}
+			else if (utype == vec4arraytype) {
+				offset = alignOffset(offset, 16);
+			}
+
+			*offsetPointer = offset;
+
 			if (utype == booltype || utype == inttype || utype == floattype || utype == uinttype) {
 				offset += 4;
 			}
-			else if (utype == vec2type) offset += 8;
-			else if (utype == vec3type) offset += 12;
-			else if (utype == vec4type) offset += 16;
-			else if (utype == mat2type) offset += 16;
+			else if (utype == vec2type) {
+				offset += 8;
+			}
+			else if (utype == vec3type) {
+				offset += 12;
+			}
+			else if (utype == vec4type) {
+				offset += 16;
+			}
+			else if (utype == mat2type) {
+				offset += 16;
+			}
 			else if (utype == mat3type) {
 				offset += 48; // 36 + 12 padding for DecorationMatrixStride of 16
 			}
 			else if (utype == mat4type) offset += 64;
-			else if (utype == floatarraytype) offset += arraySizes[floatarraytype] * 4;
-			else if (utype == vec2arraytype) offset += arraySizes[vec2arraytype] * 4 * 2;
-			else if (utype == vec3arraytype) offset += arraySizes[vec3arraytype] * 4 * 3;
-			else if (utype == vec4arraytype) offset += arraySizes[vec4arraytype] * 4 * 4;
+			else if (utype == floatarraytype) {
+				offset += arraySizes[floatarraytype] * 4;
+				if (offset % 8 != 0) {
+					offset += 4;
+				}
+			}
+			else if (utype == vec2arraytype) {
+				offset += arraySizes[vec2arraytype] * 4 * 2;
+			}
+			else if (utype == vec3arraytype) {
+				offset += arraySizes[vec3arraytype] * 4 * 3;
+				if (offset % 8 != 0) {
+					offset += 4;
+				}
+			}
+			else if (utype == vec4arraytype) {
+				offset += arraySizes[vec4arraytype] * 4 * 4;
+			}
 			else {
 				offset += 1; // Type not handled
 			}
@@ -261,7 +383,7 @@ namespace {
 			Instruction dec1(OpDecorate, &instructionsData[instructionsDataIndex], 2);
 			structtypeindices.push_back(instructionsDataIndex);
 			instructionsData[instructionsDataIndex++] = 0;
-			instructionsData[instructionsDataIndex++] = DecorationBlock;
+			instructionsData[instructionsDataIndex++] = DecorationBufferBlock;
 			newinstructions.push_back(dec1);
 		}
 	}
@@ -377,6 +499,21 @@ namespace {
 }
 
 void SpirVTranslator::outputCode(const Target& target, const char* sourcefilename, const char* filename, char* output, std::map<std::string, int>& attributes) {
+	booltype = 0;
+	inttype = 0;
+	uinttype = 0;
+	floattype = 0;
+	vec4type = 0;
+	vec3type = 0;
+	vec2type = 0;
+	mat4type = 0;
+	mat3type = 0;
+	mat2type = 0;
+	floatarraytype = 0;
+	vec2arraytype = 0;
+	vec3arraytype = 0;
+	vec4arraytype = 0;
+
 	using namespace spv;
 
 	std::map<unsigned, std::string> names;
@@ -507,6 +644,9 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		case OpTypeArray: {
 			unsigned id = inst.operands[0];
 			unsigned componentType = inst.operands[1];
+			if (imageTypes[componentType]) {
+				imageTypes[id] = true;
+			}
 			arraySizes[id] = arraySizeConstants[inst.operands[2]];
 			if (componentType == floattype) {
 				floatarraytype = id;
@@ -736,6 +876,29 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 				newinstructions.push_back(inst);
 			}
 		}
+		else if (inst.opcode == OpTypePointer) {
+			// Putting uniforms into a uniform-block changes the types from UniformConstant to Uniform
+			unsigned resultId = inst.operands[0];
+			unsigned storageClass = inst.operands[1];
+			unsigned typeId = inst.operands[2];
+
+			bool replaced = false;
+
+			if (storageClass == 0) {
+				if (!imageTypes[typeId]) {
+					Instruction typePointer(OpTypePointer, &instructionsData[instructionsDataIndex], 3);
+					instructionsData[instructionsDataIndex++] = resultId;
+					instructionsData[instructionsDataIndex++] = 2; // Uniform
+					instructionsData[instructionsDataIndex++] = typeId;
+					newinstructions.push_back(typePointer);
+					replaced = true;
+				}
+			}
+
+			if (!replaced) {
+				newinstructions.push_back(inst);
+			}
+		}
 		else if (inst.opcode == OpAccessChain) {
 			// replace all accesses to global uniforms
 			unsigned resultType = inst.operands[0];
@@ -755,20 +918,17 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 			}
 
 			if (found) {
-				Instruction access1(OpAccessChain, &instructionsData[instructionsDataIndex], 4);
-				instructionsData[instructionsDataIndex++] = uniform.pointertype;
-				unsigned newbase = instructionsData[instructionsDataIndex++] = currentId++;
-				instructionsData[instructionsDataIndex++] = structid;
-				instructionsData[instructionsDataIndex++] = constants[index];
-				newinstructions.push_back(access1);
-				Instruction access2(OpAccessChain, &instructionsData[instructionsDataIndex], inst.length);
+				// OpAccessChain can be a chain of any size so we just sneak in the access to the
+				// uniform-struct at the front
+				Instruction access(OpAccessChain, &instructionsData[instructionsDataIndex], inst.length + 1);
 				instructionsData[instructionsDataIndex++] = resultType;
 				instructionsData[instructionsDataIndex++] = resultId;
-				instructionsData[instructionsDataIndex++] = newbase;
+				instructionsData[instructionsDataIndex++] = structid;
+				instructionsData[instructionsDataIndex++] = constants[index];
 				for (unsigned i = 3; i < inst.length; ++i) {
 					instructionsData[instructionsDataIndex++] = inst.operands[i];
 				}
-				newinstructions.push_back(access2);
+				newinstructions.push_back(access);
 			}
 			else {
 				newinstructions.push_back(inst);
@@ -920,6 +1080,29 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 	}
 
 	bound = currentId + 1;
-	outputLength = writeInstructions(filename, output, newinstructions);
-	//outputLength = writeInstructions(filename, output, instructions);
+
+	//outputLength = writeInstructions(filename, output, newinstructions);
+
+	std::vector<uint32_t> spirv;
+	outputLength = writeInstructions(spirv, newinstructions);
+
+	spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_0);
+	optimizer.RegisterPerformancePasses();
+	std::vector<uint32_t> optimizedSpirv;
+	bool success = optimizer.Run(spirv.data(), spirv.size(), &optimizedSpirv);
+
+	if (!success) {
+		fprintf(stderr, "Optimizer error, falling back to unoptimized SPIRV.\n");
+		optimizedSpirv = spirv;
+	}
+
+	outputLength = (int)(optimizedSpirv.size() * 4);
+	if (output) {
+		memcpy(output, optimizedSpirv.data(), outputLength);
+	}
+	else {
+		FILE* file = fopen(filename, "wb");
+		fwrite(optimizedSpirv.data(), 4, optimizedSpirv.size(), file);
+		fclose(file);
+	}
 }

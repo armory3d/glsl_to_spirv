@@ -2,6 +2,8 @@
 
 #include "Translator.h"
 
+#include <cstdint>
+
 namespace krafix {
 	class SpirVTranslator : public Translator {
 	public:
@@ -10,5 +12,6 @@ namespace krafix {
 		int outputLength;
 	private:
 		int writeInstructions(const char* filename, char* output, std::vector<Instruction>& instructions);
+		int writeInstructions(std::vector<uint32_t>& output, std::vector<Instruction>& instructions);
 	};
 }
