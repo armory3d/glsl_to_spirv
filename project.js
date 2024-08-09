@@ -1,29 +1,9 @@
-let project = new Project('krafix');
+let project = new Project('glsl_to_spirv');
 
-project.addDefine('SPIRV_CROSS_KRAFIX');
 project.addDefine('KRAFIX_LIBRARY');
-
-project.addFile('Sources/**');
-project.addFile('glslang/StandAlone/ResourceLimits.cpp');
-project.addFile('glslang/glslang/GenericCodeGen/**');
-project.addFile('glslang/glslang/MachineIndependent/**');
-project.addFile('glslang/glslang/Include/**');
-project.addFile('glslang/OGLCompilersDLL/**');
-project.addFile('glslang/SPIRV/**');
+project.addFile('Sources/main.cpp');
 
 project.addIncludeDir('glslang');
-project.addIncludeDir('glslang/glslang');
-project.addIncludeDir('glslang/glslang/MachineIndependent');
-project.addIncludeDir('glslang/glslang/Include');
-project.addIncludeDir('glslang/OGLCompilersDLL');
-
-if (platform === "windows") {
-	project.addFile('glslang/glslang/OSDependent/Windows/**');
-	project.addIncludeDir('glslang/glslang/OSDependent/Windows');
-}
-else {
-	project.addFile('glslang/glslang/OSDependent/Unix/**');
-	project.addIncludeDir('glslang/glslang/OSDependent/Unix');
-}
+project.addFile('glslang/**');
 
 return project;

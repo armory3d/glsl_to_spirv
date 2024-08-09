@@ -1,19 +1,150 @@
-#include "SpirVTranslator.h"
+//
+// Copyright (C) 2002-2005  3Dlabs Inc. Ltd.
+// Copyright (C) 2013-2016 LunarG, Inc.
+//
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions
+// are met:
+//
+//    Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimer.
+//
+//    Redistributions in binary form must reproduce the above
+//    copyright notice, this list of conditions and the following
+//    disclaimer in the documentation and/or other materials provided
+//    with the distribution.
+//
+//    Neither the name of 3Dlabs Inc. Ltd. nor the names of its
+//    contributors may be used to endorse or promote products derived
+//    from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+// FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+// COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+// BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+// CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+// LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+// ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
 
-#include <SPIRV/spirv.hpp>
-#include "../glslang/glslang/Public/ShaderLang.h"
-#include "../SPIRV-Cross/spirv_cross_error_handling.hpp"
-
-#include <algorithm>
-#include <fstream>
-#include <map>
-#include <string.h>
+#include <cstring>
+#include <cstdlib>
+#include <cctype>
+#include <cmath>
+#include <array>
 #include <sstream>
+#include <iostream>
+#include <fstream>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+#include <algorithm>
+#include <string.h>
 #include <strstream>
+#include "../glslang/StandAlone/ResourceLimits.h"
+#include "../glslang/StandAlone/Worklist.h"
+#include "../glslang/SPIRV/GlslangToSpv.h"
+#include "../glslang/SPIRV/spirv.hpp"
+#include "../glslang/glslang/Public/ShaderLang.h"
 
-// #include <spirv-tools/optimizer.hpp>
+namespace krafix {
+	enum TargetLanguage {
+		SpirV
+	};
+
+	enum ShaderStage {
+		StageVertex,
+		StageGeometry,
+		StageFragment,
+		StageCompute
+	};
+
+	enum TargetSystem {
+		Linux,
+		Android,
+		Unknown
+	};
+
+	struct Target {
+		int version;
+		TargetSystem system;
+	};
+
+	class Instruction {
+	public:
+		Instruction(std::vector<unsigned>& spirv, unsigned& index);
+		Instruction(int opcode, unsigned* operands, unsigned length);
+		int opcode;
+		unsigned* operands;
+		unsigned length;
+		const char* string;
+	};
+
+	class SpirVTranslator {
+	public:
+		SpirVTranslator(std::vector<unsigned>& spirv, ShaderStage stage);
+		void outputCode(const Target& target, const char* sourcefilename, const char* filename, char* output, std::map<std::string, int>& attributes);
+		int outputLength;
+		int writeInstructions(const char* filename, char* output, std::vector<Instruction>& instructions);
+		int writeInstructions(std::vector<uint32_t>& output, std::vector<Instruction>& instructions);
+		std::vector<unsigned>& spirv;
+		std::vector<Instruction> instructions;
+		ShaderStage stage;
+		spv::ExecutionModel executionModel();
+		unsigned magicNumber;
+		unsigned version;
+		unsigned generator;
+		unsigned bound;
+		unsigned schema;
+	};
+}
 
 using namespace krafix;
+
+Instruction::Instruction(std::vector<unsigned>& spirv, unsigned& index) {
+	using namespace spv;
+
+	int wordCount = spirv[index] >> 16;
+	opcode = (Op)(spirv[index] & 0xffff);
+
+	operands = wordCount > 1 ? &spirv[index + 1] : NULL;
+	length = wordCount - 1;
+
+	switch (opcode) {
+	case OpString:
+		string = (char*)&spirv[index + 2];
+		break;
+	case OpName:
+		string = (char*)&spirv[index + 2];
+		break;
+	case OpMemberName:
+		string = (char*)&spirv[index + 3];
+		break;
+	case OpEntryPoint:
+		string = (char*)&spirv[index + 3];
+		break;
+	case OpSourceExtension:
+		string = (char*)&spirv[index + 1];
+		break;
+	default:
+		string = NULL;
+		break;
+	}
+
+	index += wordCount;
+}
+
+Instruction::Instruction(int opcode, unsigned* operands, unsigned length)
+	: opcode(opcode), operands(operands), length(length), string(NULL) {
+}
 
 namespace {
 	enum SpirVState {
@@ -80,6 +211,36 @@ namespace {
 			++length;
 		}
 		return length;
+	}
+}
+
+SpirVTranslator::SpirVTranslator(std::vector<unsigned>& spirv, ShaderStage stage) : stage(stage), spirv(spirv) {
+	if (spirv.size() < 5) { return; }
+
+	unsigned index = 0;
+	magicNumber = spirv[index++];
+	version = spirv[index++];
+	generator = spirv[index++];
+	bound = spirv[index++];
+	schema = spirv[index++];
+
+	while (index < spirv.size()) {
+		instructions.push_back(Instruction(spirv, index));
+	}
+}
+
+spv::ExecutionModel SpirVTranslator::executionModel() {
+	switch (stage) {
+	case StageVertex:
+		return spv::ExecutionModelVertex;
+	case StageGeometry:
+		return spv::ExecutionModelGeometry;
+	case StageFragment:
+		return spv::ExecutionModelFragment;
+	case StageCompute:
+		return spv::ExecutionModelGLCompute;
+	default:
+		throw "Unknown shader stage";
 	}
 }
 
@@ -731,7 +892,6 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		case SpirVStart:
 			if (isDebugInformation(inst)) {
 				state = SpirVDebugInformation;
-
 				if (!namesInserted) {
 					outputNames(instructionsData, instructionsDataIndex, structtypeindices, structvarindex, newinstructions, uniforms);
 					namesInserted = true;
@@ -741,7 +901,6 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		case SpirVDebugInformation:
 			if (isAnnotation(inst)) {
 				state = SpirVAnnotations;
-
 				if (!namesInserted) {
 					outputNames(instructionsData, instructionsDataIndex, structtypeindices, structvarindex, newinstructions, uniforms);
 					namesInserted = true;
@@ -1081,20 +1240,10 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 
 	bound = currentId + 1;
 
-	//outputLength = writeInstructions(filename, output, newinstructions);
-
 	std::vector<uint32_t> spirv;
 	outputLength = writeInstructions(spirv, newinstructions);
-
-	// spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_0);
-	// optimizer.RegisterPerformancePasses();
 	std::vector<uint32_t> optimizedSpirv;
-	// bool success = optimizer.Run(spirv.data(), spirv.size(), &optimizedSpirv);
-
-	// if (!success) {
-		// fprintf(stderr, "Optimizer error, falling back to unoptimized SPIRV.\n");
-		optimizedSpirv = spirv;
-	// }
+	optimizedSpirv = spirv;
 
 	outputLength = (int)(optimizedSpirv.size() * 4);
 	if (output) {
@@ -1105,4 +1254,635 @@ void SpirVTranslator::outputCode(const Target& target, const char* sourcefilenam
 		fwrite(optimizedSpirv.data(), 4, optimizedSpirv.size(), file);
 		fclose(file);
 	}
+}
+
+enum TOptions {
+	EOptionNone = 0,
+	EOptionIntermediate = (1 << 0),
+	EOptionSuppressInfolog = (1 << 1),
+	EOptionMemoryLeakMode = (1 << 2),
+	EOptionRelaxedErrors = (1 << 3),
+	EOptionGiveWarnings = (1 << 4),
+	EOptionLinkProgram = (1 << 5),
+	EOptionMultiThreaded = (1 << 6),
+	EOptionDumpConfig = (1 << 7),
+	EOptionDumpReflection = (1 << 8),
+	EOptionSuppressWarnings = (1 << 9),
+	EOptionDumpVersions = (1 << 10),
+	EOptionSpv = (1 << 11),
+	EOptionHumanReadableSpv = (1 << 12),
+	EOptionVulkanRules = (1 << 13),
+	EOptionDefaultDesktop = (1 << 14),
+	EOptionOutputPreprocessed = (1 << 15),
+	EOptionOutputHexadecimal = (1 << 16),
+	EOptionReadHlsl = (1 << 17),
+	EOptionCascadingErrors = (1 << 18),
+	EOptionAutoMapBindings = (1 << 19),
+	EOptionFlattenUniformArrays = (1 << 20),
+	EOptionNoStorageFormat = (1 << 21),
+	EOptionKeepUncalled = (1 << 22),
+};
+
+enum TFailCode {
+	ESuccess = 0,
+	EFailUsage,
+	EFailCompile,
+	EFailLink,
+	EFailCompilerCreate,
+	EFailThreadCreate,
+	EFailLinkerCreate
+};
+
+EShLanguage FindLanguage(const std::string& name, bool parseSuffix = true);
+void CompileFile(const char* fileName, ShHandle);
+void usage();
+void FreeFileData(char** data);
+char** ReadFileData(const char* fileName);
+
+bool CompileFailed = false;
+bool LinkFailed = false;
+static bool quiet = false;
+int NumShaderStrings;
+TBuiltInResource Resources;
+std::string ConfigFile;
+
+void ProcessConfigFile() {
+	char** configStrings = 0;
+	char* config = 0;
+	if (ConfigFile.size() > 0) {
+		configStrings = ReadFileData(ConfigFile.c_str());
+		if (configStrings)
+			config = *configStrings;
+		else {
+			printf("Error opening configuration file; will instead use the default configuration\n");
+			usage();
+		}
+	}
+
+	if (config == 0) {
+		Resources = glslang::DefaultTBuiltInResource;
+		return;
+	}
+
+	glslang::DecodeResourceLimits(&Resources, config);
+
+	if (configStrings)
+		FreeFileData(configStrings);
+	else
+		delete[] config;
+}
+
+glslang::TWorklist Worklist;
+glslang::TWorkItem** Work = 0;
+int NumWorkItems = 0;
+
+int Options = 0;
+const char* ExecutableName = nullptr;
+const char* binaryFileName = nullptr;
+const char* entryPointName = nullptr;
+const char* sourceEntryPointName = nullptr;
+const char* shaderStageName = nullptr;
+const char* variableName = nullptr;
+
+std::array<unsigned int, EShLangCount> baseSamplerBinding;
+std::array<unsigned int, EShLangCount> baseTextureBinding;
+std::array<unsigned int, EShLangCount> baseImageBinding;
+std::array<unsigned int, EShLangCount> baseUboBinding;
+std::array<unsigned int, EShLangCount> baseSsboBinding;
+
+bool SetConfigFile(const std::string& name) {
+	if (name.size() < 5)
+		return false;
+
+	if (name.compare(name.size() - 5, 5, ".conf") == 0) {
+		ConfigFile = name;
+		return true;
+	}
+
+	return false;
+}
+
+void Error(const char* message) {
+	printf("%s: Error %s (use -h for usage)\n", ExecutableName, message);
+	exit(EFailUsage);
+}
+
+void SetMessageOptions(EShMessages& messages) {
+	if (Options & EOptionRelaxedErrors)
+		messages = (EShMessages)(messages | EShMsgRelaxedErrors);
+	if (Options & EOptionIntermediate)
+		messages = (EShMessages)(messages | EShMsgAST);
+	if (Options & EOptionSuppressWarnings)
+		messages = (EShMessages)(messages | EShMsgSuppressWarnings);
+	if (Options & EOptionSpv)
+		messages = (EShMessages)(messages | EShMsgSpvRules);
+	if (Options & EOptionVulkanRules)
+		messages = (EShMessages)(messages | EShMsgVulkanRules);
+	if (Options & EOptionOutputPreprocessed)
+		messages = (EShMessages)(messages | EShMsgOnlyPreprocessor);
+	if (Options & EOptionReadHlsl)
+		messages = (EShMessages)(messages | EShMsgReadHlsl);
+	if (Options & EOptionCascadingErrors)
+		messages = (EShMessages)(messages | EShMsgCascadingErrors);
+	if (Options & EOptionKeepUncalled)
+		messages = (EShMessages)(messages | EShMsgKeepUncalled);
+}
+
+void PutsIfNonEmpty(const char* str) {
+	if (str && str[0]) {
+		puts(str);
+	}
+}
+
+void StderrIfNonEmpty(const char* str) {
+	if (str && str[0]) {
+		fprintf(stderr, "%s\n", str);
+	}
+}
+
+struct ShaderCompUnit {
+	EShLanguage stage;
+	std::string fileName;
+	char** text;             // memory owned/managed externally
+	const char* fileNameList[1];
+
+	// Need to have a special constructors to adjust the fileNameList, since back end needs a list of ptrs
+	ShaderCompUnit(EShLanguage istage, std::string& ifileName, char** itext)
+	{
+		stage = istage;
+		fileName = ifileName;
+		text = itext;
+		fileNameList[0] = fileName.c_str();
+	}
+
+	ShaderCompUnit(const ShaderCompUnit& rhs)
+	{
+		stage = rhs.stage;
+		fileName = rhs.fileName;
+		text = rhs.text;
+		fileNameList[0] = fileName.c_str();
+	}
+
+};
+
+class NullIncluder : public glslang::TShader::Includer {
+public:
+	NullIncluder() {}
+
+	IncludeResult* includeSystem(const char* headerName, const char* includerName, size_t inclusionDepth) override {
+		return includeLocal(headerName, includerName, inclusionDepth);
+	}
+
+	IncludeResult* includeLocal(const char* headerName, const char* includerName, size_t inclusionDepth) override {
+		return nullptr;
+	}
+
+	void releaseInclude(IncludeResult* result) override {}
+};
+
+krafix::ShaderStage shLanguageToShaderStage(EShLanguage lang) {
+	switch (lang) {
+	case EShLangVertex: return krafix::StageVertex;
+	case EShLangGeometry: return krafix::StageGeometry;
+	case EShLangFragment: return krafix::StageFragment;
+	case EShLangCompute: return krafix::StageCompute;
+	case EShLangCount:
+	default:
+		return krafix::StageCompute;
+	}
+}
+
+static void preprocessSpirv(std::vector<unsigned int>& spirv) {
+	unsigned binding = 0;
+	for (unsigned index = 0; index < spirv.size(); ++index) {
+		int wordCount = spirv[index] >> 16;
+		int opcode = spirv[index] & 0xffff;
+
+		unsigned* operands = wordCount > 1 ? &spirv[index + 1] : NULL;
+		int length = wordCount - 1;
+
+		if (opcode == 71 && length >= 2) {
+			if (operands[1] == 33) {
+				operands[2] = binding++;
+			}
+		}
+	}
+}
+
+void CompileAndLinkShaderUnits(std::vector<ShaderCompUnit> compUnits, krafix::Target target, const char* sourcefilename, const char* filename, const char* tempdir, char* output, int* length,
+	glslang::TShader::Includer& includer, const char* defines, bool relax) {
+
+	std::list<glslang::TShader*> shaders;
+	EShMessages messages = EShMsgDefault;
+	SetMessageOptions(messages);
+
+	glslang::TProgram& program = *new glslang::TProgram;
+	for (auto it = compUnits.cbegin(); it != compUnits.cend(); ++it) {
+		const auto& compUnit = *it;
+		glslang::TShader* shader = new glslang::TShader(compUnit.stage);
+		shader->setStringsWithLengthsAndNames(compUnit.text, NULL, compUnit.fileNameList, 1);
+		if (entryPointName) // HLSL todo: this needs to be tracked per compUnits
+			shader->setEntryPoint(entryPointName);
+		if (sourceEntryPointName)
+			shader->setSourceEntryPoint(sourceEntryPointName);
+
+		shader->setShiftSamplerBinding(baseSamplerBinding[compUnit.stage]);
+		shader->setShiftTextureBinding(baseTextureBinding[compUnit.stage]);
+		shader->setShiftImageBinding(baseImageBinding[compUnit.stage]);
+		shader->setShiftUboBinding(baseUboBinding[compUnit.stage]);
+		shader->setShiftSsboBinding(baseSsboBinding[compUnit.stage]);
+		// shader->setFlattenUniformArrays((Options & EOptionFlattenUniformArrays) != 0);
+		shader->setNoStorageFormat((Options & EOptionNoStorageFormat) != 0);
+		shader->setPreamble(defines);
+
+		if (Options & EOptionAutoMapBindings)
+			shader->setAutoMapBindings(true);
+
+		shaders.push_back(shader);
+
+		const int defaultVersion = Options & EOptionDefaultDesktop ? 110 : 100;
+
+		if (Options & EOptionOutputPreprocessed) {
+			std::string str;
+			//glslang::TShader::ForbidIncluder includer;
+			if (shader->preprocess(&Resources, defaultVersion, ENoProfile, false, false,
+				messages, &str, includer)) {
+				PutsIfNonEmpty(str.c_str());
+			}
+			else {
+				CompileFailed = true;
+			}
+			StderrIfNonEmpty(shader->getInfoLog());
+			StderrIfNonEmpty(shader->getInfoDebugLog());
+			continue;
+		}
+		if (!shader->parse(&Resources, defaultVersion, ENoProfile, false, false, messages, includer))
+			CompileFailed = true;
+
+		program.addShader(shader);
+
+		if (!(Options & EOptionSuppressInfolog) &&
+			!(Options & EOptionMemoryLeakMode)) {
+			//PutsIfNonEmpty(compUnit.fileName.c_str());
+			PutsIfNonEmpty(shader->getInfoLog());
+			PutsIfNonEmpty(shader->getInfoDebugLog());
+		}
+	}
+
+	// Link
+	if (!(Options & EOptionOutputPreprocessed) && !program.link(messages))
+		LinkFailed = true;
+
+	// Map IO
+	if (Options & EOptionSpv) {
+		if (!program.mapIO())
+			LinkFailed = true;
+	}
+
+	// Report
+	if (!(Options & EOptionSuppressInfolog) &&
+		!(Options & EOptionMemoryLeakMode)) {
+		PutsIfNonEmpty(program.getInfoLog());
+		PutsIfNonEmpty(program.getInfoDebugLog());
+	}
+
+	// Reflect
+	if (Options & EOptionDumpReflection) {
+		program.buildReflection();
+		program.dumpReflection();
+	}
+
+	// Dump SPIR-V
+	if (Options & EOptionSpv) {
+		if (CompileFailed || LinkFailed)
+			printf("SPIR-V is not generated for failed compile or link\n");
+		else {
+			for (int stage = 0; stage < EShLangCount; ++stage) {
+				if (program.getIntermediate((EShLanguage)stage)) {
+					std::vector<unsigned int> spirv;
+					std::string warningsErrors;
+					spv::SpvBuildLogger logger;
+					glslang::GlslangToSpv(*program.getIntermediate((EShLanguage)stage), spirv, &logger);
+					preprocessSpirv(spirv);
+					krafix::SpirVTranslator* translator = NULL;
+					std::map<std::string, int> attributes;
+					translator = new krafix::SpirVTranslator(spirv, shLanguageToShaderStage((EShLanguage)stage));
+					translator->outputCode(target, sourcefilename, filename, output, attributes);
+					if (output != nullptr) {
+						*length = dynamic_cast<krafix::SpirVTranslator*>(translator)->outputLength;
+					}
+					delete translator;
+				}
+			}
+		}
+	}
+
+	delete& program;
+	while (shaders.size() > 0) {
+		delete shaders.back();
+		shaders.pop_back();
+	}
+}
+
+krafix::TargetSystem getSystem(const char* system) {
+	if (strcmp(system, "linux") == 0) return krafix::Linux;
+	if (strcmp(system, "android") == 0) return krafix::Android;
+	return krafix::Unknown;
+}
+
+void CompileAndLinkShaderFiles(krafix::Target target, const char* sourcefilename, const char* filename, const char* tempdir, const char* source, char* output, int* length, glslang::TShader::Includer& includer, const char* defines, bool relax)
+{
+	std::vector<ShaderCompUnit> compUnits;
+
+	char* sources[] = { (char*)source, nullptr, nullptr, nullptr, nullptr };
+
+	glslang::TWorkItem* workItem;
+	while (Worklist.remove(workItem)) {
+		ShaderCompUnit compUnit(
+			FindLanguage(workItem->name),
+			workItem->name,
+			source != nullptr ? sources : ReadFileData(workItem->name.c_str())
+		);
+
+		if (!compUnit.text) {
+			usage();
+			return;
+		}
+
+		compUnits.push_back(compUnit);
+	}
+
+	for (int i = 0; i < ((Options & EOptionMemoryLeakMode) ? 100 : 1); ++i) {
+		for (int j = 0; j < ((Options & EOptionMemoryLeakMode) ? 100 : 1); ++j)
+			CompileAndLinkShaderUnits(compUnits, target, sourcefilename, filename, tempdir, output, length, includer, defines, relax);
+
+		if (Options & EOptionMemoryLeakMode)
+			glslang::OS_DumpMemoryCounters();
+	}
+
+	if (source == nullptr) {
+		for (auto it = compUnits.begin(); it != compUnits.end(); ++it)
+			FreeFileData(it->text);
+	}
+}
+
+int compile(const char* targetlang, const char* from, std::string to, const char* tempdir, const char* source, char* output, int* length, const char* system,
+	glslang::TShader::Includer& includer, std::string defines, int version, bool relax) {
+	CompileFailed = false;
+
+	Options |= EOptionSpv;
+	Options |= EOptionLinkProgram;
+
+	NumWorkItems = 1;
+	Work = new glslang::TWorkItem * [NumWorkItems];
+	Work[0] = 0;
+
+	if (from) {
+		std::string name(from);
+		if (!SetConfigFile(name)) {
+			Work[0] = new glslang::TWorkItem(name);
+			Worklist.add(Work[0]);
+		}
+	}
+	else {
+		std::string name = std::string("nothing.") + to;
+		Work[0] = new glslang::TWorkItem(name);
+		Worklist.add(Work[0]);
+	}
+
+	glslang::InitializeProcess();
+
+	krafix::Target target;
+	target.system = getSystem(system);
+	target.version = version > 0 ? version : 1;
+	defines += "#define SPIRV " + std::to_string(target.version) + "\n";
+	CompileAndLinkShaderFiles(target, from, to.c_str(), tempdir, source, output, length, includer, defines.c_str(), relax);
+	if (!CompileFailed && !quiet) {
+		std::cerr << "#file:" << to << std::endl;
+	}
+
+	glslang::FinalizeProcess();
+
+	if (CompileFailed || LinkFailed) return 1;
+	else return 0;
+}
+
+int compileOptionallyRelaxed(const char* targetlang, const char* from, std::string to, std::string ext, const char* tempdir, const char* source, char* output, int* length, const char* system,
+	glslang::TShader::Includer& includer, std::string defines, int version, bool relax) {
+	int regularErrors = 0, relaxErrors = 0, es3Errors = 0;
+
+	regularErrors = compile(targetlang, from, to + ext, tempdir, source, output, length, system, includer, defines, version, false);
+	if (relax) {
+		relaxErrors = compile(targetlang, from, to + "-relaxed" + ext, tempdir, source, output, length, system, includer, defines, version, true);
+		return std::min(regularErrors, relaxErrors);
+	}
+	else {
+		return regularErrors;
+	}
+}
+
+int compileOptionallyInstanced(const char* targetlang, const char* from, std::string to, std::string ext, const char* tempdir, const char* source, char* output, int* length, const char* system,
+	glslang::TShader::Includer& includer, std::string defines, int version, bool instanced, bool relax) {
+	int errors = 0;
+	if (instanced) {
+		errors += compileOptionallyRelaxed(targetlang, from, to + "-noinst", ext, tempdir, source, output, length, system, includer, defines, version, relax);
+		errors += compileOptionallyRelaxed(targetlang, from, to + "-inst", ext, tempdir, source, output, length, system, includer, defines + "#define INSTANCED_RENDERING\n", version, relax);
+	}
+	else {
+		errors += compileOptionallyRelaxed(targetlang, from, to, ext, tempdir, source, output, length, system, includer, defines, version, relax);
+	}
+	return errors;
+}
+
+int compileWithTextureUnits(const char* targetlang, const char* from, std::string to, std::string ext, const char* tempdir, const char* source, char* output, int* length, const char* system,
+	glslang::TShader::Includer& includer, std::string defines, int version, const std::vector<int>& textureUnitCounts, bool usesTextureUnitsCount, bool instanced, bool relax) {
+	int errors = 0;
+	if (usesTextureUnitsCount && textureUnitCounts.size() > 0) {
+		for (size_t i = 0; i < textureUnitCounts.size(); ++i) {
+			int texcount = textureUnitCounts[i];
+			std::stringstream toto;
+			toto << to << "-tex" << texcount << ext;
+			std::stringstream definesplustex;
+			definesplustex << defines << "#define MAX_TEXTURE_UNITS=" << texcount << "\n";
+			errors += compileOptionallyInstanced(targetlang, from, toto.str(), ext, tempdir, source, output, length, system, includer, definesplustex.str(), version, instanced, relax);
+		}
+	}
+	else {
+		errors += compileOptionallyInstanced(targetlang, from, to, ext, tempdir, source, output, length, system, includer, defines, version, instanced, relax);
+	}
+	return errors;
+}
+
+extern "C" int krafix_compile(const char *source, char *output, int *length, const char *targetlang, const char *system, const char *shadertype, int version) {
+	CompileFailed = false;
+	LinkFailed = false;
+
+	std::string defines;
+	std::vector<int> textureUnitCounts;
+	bool instancedoptional = false;
+	bool relax = false;
+	quiet = true;
+
+	ProcessConfigFile();
+
+	NullIncluder includer;
+
+	bool usesTextureUnitsCount = false;
+	bool usesInstancedoptional = false;
+
+	char from[256];
+	strcpy(from, ".");
+	strcat(from, shadertype);
+	strcat(from, ".glsl");
+
+	return compileWithTextureUnits(targetlang, from, "", shadertype, nullptr, source, output, length, system, includer, defines, version, textureUnitCounts, usesTextureUnitsCount, instancedoptional && usesInstancedoptional, relax);
+}
+
+EShLanguage FindLanguage(const std::string& name, bool parseSuffix) {
+	size_t ext = 0;
+	std::string suffix;
+
+	if (shaderStageName)
+		suffix = shaderStageName;
+	else {
+		if (parseSuffix) {
+			ext = name.rfind('.');
+			if (ext == std::string::npos) {
+				usage();
+				return EShLangVertex;
+			}
+			++ext;
+		}
+		suffix = name.substr(ext, std::string::npos);
+	}
+
+	if (suffix == "glsl") {
+		size_t ext2 = name.substr(0, ext - 1).rfind('.');
+		suffix = name.substr(ext2 + 1, ext - ext2 - 2);
+	}
+
+	if (suffix == "vert")
+		return EShLangVertex;
+	else if (suffix == "geom")
+		return EShLangGeometry;
+	else if (suffix == "frag")
+		return EShLangFragment;
+	else if (suffix == "comp")
+		return EShLangCompute;
+
+	usage();
+	return EShLangVertex;
+}
+
+void CompileFile(const char* fileName, ShHandle compiler) {
+	int ret = 0;
+	char** shaderStrings = ReadFileData(fileName);
+	if (!shaderStrings) {
+		usage();
+	}
+
+	int* lengths = new int[NumShaderStrings];
+
+	// move to length-based strings, rather than null-terminated strings
+	for (int s = 0; s < NumShaderStrings; ++s)
+		lengths[s] = (int)strlen(shaderStrings[s]);
+
+	if (!shaderStrings) {
+		CompileFailed = true;
+		return;
+	}
+
+	EShMessages messages = EShMsgDefault;
+	SetMessageOptions(messages);
+
+	for (int i = 0; i < ((Options & EOptionMemoryLeakMode) ? 100 : 1); ++i) {
+		for (int j = 0; j < ((Options & EOptionMemoryLeakMode) ? 100 : 1); ++j) {
+			ret = ShCompile(compiler, shaderStrings, NumShaderStrings, nullptr, EShOptNone, &Resources, Options, (Options & EOptionDefaultDesktop) ? 110 : 100, false, messages);
+		}
+
+		if (Options & EOptionMemoryLeakMode)
+			glslang::OS_DumpMemoryCounters();
+	}
+
+	delete[] lengths;
+	FreeFileData(shaderStrings);
+
+	if (ret == 0)
+		CompileFailed = true;
+}
+
+void usage() {
+	printf("Usage: krafix profile in out tempdir system\n");
+	exit(EFailUsage);
+}
+
+char** ReadFileData(const char* fileName) {
+	FILE *in = fopen(fileName, "r");
+
+	int count = 0;
+	const int maxSourceStrings = 5;  // for testing splitting shader/tokens across multiple strings
+	char** return_data = (char**)malloc(sizeof(char*) * (maxSourceStrings + 1)); // freed in FreeFileData()
+
+	if (in == nullptr)
+		Error("unable to open input file");
+
+	while (fgetc(in) != EOF)
+		count++;
+
+	fseek(in, 0, SEEK_SET);
+
+	char* fdata = (char*)malloc(count + 2); // freed before return of this function
+	if (!fdata)
+		Error("can't allocate memory");
+
+	if ((int)fread(fdata, 1, count, in) != count) {
+		free(fdata);
+		Error("can't read input file");
+	}
+
+	fdata[count] = '\0';
+	fclose(in);
+
+	if (count == 0) {
+		// recover from empty file
+		return_data[0] = (char*)malloc(count + 2);  // freed in FreeFileData()
+		return_data[0][0] = '\0';
+		NumShaderStrings = 0;
+		free(fdata);
+
+		return return_data;
+	}
+	else
+		NumShaderStrings = 1;  // Set to larger than 1 for testing multiple strings
+
+	// compute how to split up the file into multiple strings, for testing multiple strings
+	int len = (int)(ceil)((float)count / (float)NumShaderStrings);
+	int ptr_len = 0;
+	int i = 0;
+	while (count > 0) {
+		return_data[i] = (char*)malloc(len + 2);  // freed in FreeFileData()
+		memcpy(return_data[i], fdata + ptr_len, len);
+		return_data[i][len] = '\0';
+		count -= len;
+		ptr_len += len;
+		if (count < len) {
+			if (count == 0) {
+				NumShaderStrings = i + 1;
+				break;
+			}
+			len = count;
+		}
+		++i;
+	}
+
+	free(fdata);
+
+	return return_data;
+}
+
+void FreeFileData(char** data) {
+	for (int i = 0; i < NumShaderStrings; i++)
+		free(data[i]);
+
+	free(data);
 }
