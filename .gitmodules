@@ -1,6 +1,0 @@
-[submodule "glslang"]
-	path = glslang
-	url = https://github.com/Kode/glslang
-[submodule "SPIRV-Cross"]
-	path = SPIRV-Cross
-	url = https://github.com/Kode/SPIRV-Cross
